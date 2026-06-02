@@ -197,29 +197,59 @@
     120: 1, 121: 1, 122: 1, 123: 1, 124: 1, 125: 1, 126: 1, 127: 1,
   };
 
-  // Track name keywords → Scratch instrument index
+  // Track name keywords → Scratch instrument index.
+  //
+  // ORDERING RULE: more-specific patterns MUST appear BEFORE any pattern
+  // whose keyword is a substring of the specific one, because the loop
+  // stops at the FIRST match.  Key orderings:
+  //   "electronic/electric piano" contains "piano"   → must come first
+  //   "electric guitar"           contains "guitar"  → must come first
+  //   "wooden flute"              contains "flute"   → must come first
+  //   "steel drum"                contains "drum"    → must come first
+  //   "synth lead/pad"            contains "lead/pad"→ must come first
   const NAME_KEYWORDS = [
-    { re: /piano|keyboard|keys|pno/i,           inst: 1  },
-    { re: /electric\s*piano|e\.?\s*piano|epiano/i, inst: 2 },
-    { re: /organ|hammond|org/i,                 inst: 3  },
+    // Electric / Electronic piano  (BEFORE plain "piano") ----------------
+    { re: /electr(?:ic|onic)\s*piano|e\.?\s*piano|epiano|elec\.?\s*pno/i, inst: 2 },
+    // Plain piano / keyboard
+    { re: /piano|keyboard|keys|pno/i,              inst: 1  },
+    // Organ
+    { re: /organ|hammond|org/i,                    inst: 3  },
+    // Electric guitar  (BEFORE plain "guitar")
+    { re: /electr(?:ic|onic)\s*guitar|lead\s*guitar|e\.?\s*gtr/i, inst: 5 },
+    // Acoustic / plain guitar
     { re: /acoustic\s*guitar|folk\s*guitar|guitar|gtr/i, inst: 4 },
-    { re: /electric\s*guitar|lead\s*guitar|e\.?\s*gtr/i, inst: 5 },
-    { re: /bass/i,                              inst: 6  },
-    { re: /pizzicato|pizz/i,                    inst: 7  },
+    // Bass
+    { re: /bass/i,                                 inst: 6  },
+    // Pizzicato
+    { re: /pizzicato|pizz/i,                       inst: 7  },
+    // Strings / cello
     { re: /cello|strings|string\s*ens|violin|viola/i, inst: 8 },
-    { re: /trombone|trumpet|brass|horn|tbn|trb/i, inst: 9 },
-    { re: /clarinet|clar|cl\b/i,                inst: 10 },
+    // Brass / trombone
+    { re: /trombone|trumpet|brass|horn|tbn|trb/i,  inst: 9  },
+    // Clarinet
+    { re: /clarinet|clar|cl\b/i,                  inst: 10 },
+    // Saxophone
     { re: /saxophone|sax|alto|tenor|soprano\s*sax/i, inst: 11 },
-    { re: /\bflute\b(?!.*wood)/i,               inst: 12 },
-    { re: /wood.*flute|recorder|shakuhachi|panpipe/i, inst: 13 },
-    { re: /bassoon|contrabass|oboe|fagott/i,    inst: 14 },
-    { re: /choir|vocal|voice|ooh|aah|chorus/i,  inst: 15 },
-    { re: /vibraphone|vibes|vib\b/i,            inst: 16 },
-    { re: /music\s*box|celesta|musicbox/i,      inst: 17 },
-    { re: /steel\s*drum|steelpan|pan\s*drum/i,  inst: 18 },
-    { re: /marimba|xylophone|xylo|marimb/i,     inst: 19 },
-    { re: /synth\s*lead|lead\s*synth|moog|lead\b/i, inst: 20 },
-    { re: /synth\s*pad|pad\s*synth|pad\b|warm|atmosphere/i, inst: 21 },
+    // Wooden flute / recorder  (BEFORE plain "flute")
+    { re: /wood(?:en)?\s*flute|recorder|shakuhachi|panpipe/i, inst: 13 },
+    // Plain flute
+    { re: /flute/i,                                inst: 12 },
+    // Bassoon / oboe
+    { re: /bassoon|contrabass|oboe|fagott/i,       inst: 14 },
+    // Choir / vocals
+    { re: /choir|vocal|voice|ooh|aah|chorus/i,     inst: 15 },
+    // Vibraphone
+    { re: /vibraphone|vibes|vib\b/i,              inst: 16 },
+    // Music box / celesta
+    { re: /music\s*box|celesta|musicbox/i,        inst: 17 },
+    // Steel drum  (BEFORE any generic "drum")
+    { re: /steel\s*drum|steelpan|pan\s*drum/i,   inst: 18 },
+    // Marimba / xylophone
+    { re: /marimba|xylophone|xylo/i,               inst: 19 },
+    // Synth Lead  (BEFORE plain "lead")
+    { re: /synth\s*lead|lead\s*synth|moog/i,     inst: 20 },
+    // Synth Pad  (BEFORE plain "pad")
+    { re: /synth\s*pad|pad\s*synth/i,            inst: 21 },
   ];
 
   function guessInstrumentFromTrack(track) {
@@ -314,6 +344,7 @@
           // ── Regen reporters (hidden, drag-anywhere loop variable pills) ──
           genRegenReporter("midiLoopNote", "note"),
           genRegenReporter("midiLoopBeat", "beat"),
+          genRegenReporter("midiLoopRest", "rest"),
 
           // ── Loading & Management ──────────────────────────────────────────
           { blockType: Scratch.BlockType.LABEL, text: "Loading & Management" },
@@ -441,11 +472,12 @@
           ...genXML({
             opcode: "forEachNote",
             blockType: Scratch.BlockType.LOOP,
-            text: "for each [NOTEVAR] with [BEATVAR] duration in [NAME]",
+            text: "for each [NOTEVAR] with [BEATVAR] duration and [RESTVAR] rest in [NAME]",
             hideFromPalette: true,
             arguments: {
               NOTEVAR: { fillIn: "midiLoopNote" },
               BEATVAR: { fillIn: "midiLoopBeat" },
+              RESTVAR: { fillIn: "midiLoopRest" },
               NAME:    { type: Scratch.ArgumentType.STRING, defaultValue: "mySong" },
             },
           }),
@@ -538,7 +570,7 @@
         menus: {
           noteProps: {
             acceptReporters: false,
-            items: ["beat length", "seconds length", "velocity"],
+            items: ["beat length", "seconds length", "velocity", "rest beat length", "rest seconds length"],
           },
           messageFields: {
             acceptReporters: true,
@@ -575,14 +607,21 @@
       }
       for (const k of Object.keys(offMap)) offMap[k].sort((a, b) => a - b);
 
-      return noteOns.map((on) => {
+      return noteOns.map((on, idx) => {
         const k    = `${on.channel}-${on.note}`;
         const offs = offMap[k] || [];
         const offT = offs.find((t) => t > on.absoluteTick) ?? on.absoluteTick;
+        const beatDuration = (offT - on.absoluteTick) / ppq;
+        // Rest = gap between this note's off-tick and the next note's on-tick.
+        // For the last note in the track, rest = 0.
+        const nextOnTick = idx < noteOns.length - 1
+          ? noteOns[idx + 1].absoluteTick : offT;
+        const restBeats  = Math.max(0, (nextOnTick - offT) / ppq);
         return {
           note:     on.note,
           velocity: on.velocity,
-          beats:    (offT - on.absoluteTick) / ppq,
+          beats:    beatDuration,
+          rest:     restBeats,
         };
       });
     }
@@ -683,12 +722,14 @@
         return 0;
       }
 
-      const { note, velocity, beats } = notes[noteIdx];
+      const { note, velocity, beats, rest } = notes[noteIdx];
       const prop = String(NOTEPROP).toLowerCase();
 
-      if (prop === "velocity")       return velocity;
-      if (prop === "beat length")    return beats;
-      if (prop === "seconds length") return beats * (tempoUs / 1_000_000);
+      if (prop === "velocity")            return velocity;
+      if (prop === "beat length")         return beats;
+      if (prop === "seconds length")      return beats * (tempoUs / 1_000_000);
+      if (prop === "rest beat length")    return rest;
+      if (prop === "rest seconds length") return rest  * (tempoUs / 1_000_000);
 
       this._err(`getNoteInfo: unknown property "${NOTEPROP}"`); return 0;
     }
@@ -714,6 +755,7 @@
         // Write current note into the outermost frame so regen reporters can read it
         util.thread.stackFrames[0].midiLoopNote_value = midiNotes[midiIndex].note;
         util.thread.stackFrames[0].midiLoopBeat_value = midiNotes[midiIndex].beats;
+        util.thread.stackFrames[0].midiLoopRest_value = midiNotes[midiIndex].rest;
 
       } else {
         // ── First execution: build the merged note list ──
@@ -747,16 +789,21 @@
         }
         for (const k of Object.keys(offMap)) offMap[k].sort((a, b) => a - b);
 
-        const midiNotes = noteOns.map((on) => {
+        const midiNotes = noteOns.map((on, idx) => {
           const k    = `${on.channel}-${on.note}`;
           const offs = offMap[k] || [];
           const offT = offs.find((t) => t > on.absoluteTick) ?? on.absoluteTick;
-          return { note: on.note, beats: (offT - on.absoluteTick) / ppq };
+          const beatDuration = (offT - on.absoluteTick) / ppq;
+          const nextOnTick = idx < noteOns.length - 1
+            ? noteOns[idx + 1].absoluteTick : offT;
+          const restBeats  = Math.max(0, (nextOnTick - offT) / ppq);
+          return { note: on.note, beats: beatDuration, rest: restBeats };
         });
 
         // Write the first note to the outer frame before branch starts
         util.thread.stackFrames[0].midiLoopNote_value = midiNotes[0].note;
         util.thread.stackFrames[0].midiLoopBeat_value = midiNotes[0].beats;
+        util.thread.stackFrames[0].midiLoopRest_value = midiNotes[0].rest;
 
         // Stash loop state on the current (inner) stack frame
         util.stackFrame.midiExecute = true;
@@ -776,6 +823,9 @@
     }
     midiLoopBeat(_, util) {
       return util.thread.stackFrames[0].midiLoopBeat_value ?? "";
+    }
+    midiLoopRest(_, util) {
+      return util.thread.stackFrames[0].midiLoopRest_value ?? "";
     }
 
     // ── NEW: guess instrument reporter ────────────────────────────────────
