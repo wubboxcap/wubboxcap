@@ -1,24 +1,18 @@
-// Name: DiscordBot
-// Author: Mistium (Modified for Embed & REST Pre-upload Attachment Support)
-// Description: Make discord bots in turbowarp
+// Name: DiscordBotPlus
+// Author: Mistium (discordBot extension) & AMTVE (embed and attachment support)
+// Description: Make discord bots in scratch
 
 // License: MPL-2.0
 // This Source Code is subject to the terms of the Mozilla Public License, v2.0,
 // If a copy of the MPL was not distributed with this file,
 // Then you can obtain one at https://mozilla.org/MPL/2.0/
 
+// This extension can override the original extension.
+
+
 (function(Scratch) {
   const API = 'https://apps.mistium.com/discord';
   const WS = 'wss://gateway.discord.gg/?v=10&encoding=json';
-
-  // Optional CORS relay for the attachment-upload PUT step (see
-  // cors-upload-proxy-worker.js). The /channels/{id}/attachments PUT goes
-  // directly to a Google Cloud Storage URL whose CORS policy doesn't allow
-  // browser origins like TurboWarp, so it gets blocked unless relayed
-  // through a server you control. Leave this as '' to upload directly
-  // (works in non-browser/unsandboxed contexts); set it to your deployed
-  // worker's /proxy endpoint, e.g.:
-  // 'https://my-cors-relay.YOURNAME.workers.dev/proxy?url='
   const UPLOAD_PROXY = 'https://cors.ernestoguevarahuezo.workers.dev/proxy?url=';
 
   let bot_data = null;
