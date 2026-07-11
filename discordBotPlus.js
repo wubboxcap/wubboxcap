@@ -46,6 +46,8 @@
       this.messages = [];
       this.interactions = [];
       this.componentInteractions = [];
+      this.lastSentMessageId = null;
+      this.lastSentMessageIdByChannel = new Map();
       this.status = "online";
       this.activity = null;
       
@@ -539,6 +541,32 @@
               EMBEDS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
               ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
               COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
+            }
+          },
+          {
+            opcode: 'editMessage',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'edit message [MESSAGE_ID] in channel [CHANNEL_ID] to [CONTENT] with embeds [EMBEDS] attachments [ATTACHMENTS] components [COMPONENTS]',
+            arguments: {
+              MESSAGE_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'message_id' },
+              CHANNEL_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'channel_id' },
+              CONTENT: { type: Scratch.ArgumentType.STRING, defaultValue: 'content' },
+              EMBEDS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
+            }
+          },
+          {
+            opcode: 'lastSentMessageId',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'last sent message id',
+          },
+          {
+            opcode: 'lastSentMessageIdInChannel',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'last sent message id in channel [CHANNEL_ID]',
+            arguments: {
+              CHANNEL_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'channel_id' }
             }
           },
 
@@ -1148,6 +1176,18 @@
       return util.thread.discordPayload ?? '';
     }
 
+    // Records a just-sent message's id, both globally and per-channel, so
+    // lastSentMessageId()/lastSentMessageIdInChannel() can report it later.
+    // Passes the API response straight through so it can stay in a .then()
+    // chain without disturbing the resolved value.
+    _trackSentMessage(channelId, message) {
+      if (message && message.id) {
+        this.lastSentMessageId = message.id;
+        this.lastSentMessageIdByChannel.set(channelId, message.id);
+      }
+      return message;
+    }
+
     _cacheMessage(message) {
       if (!message.channel_id || !message.id) return;
       
@@ -1310,10 +1350,12 @@
     // ==============================================
     
     sendMessage({ MESSAGE, CHANNEL }) {
-      return this._apiRequest(`/channels/${util.s(CHANNEL)}/messages`, {
+      const channelId = util.s(CHANNEL);
+      return this._apiRequest(`/channels/${channelId}/messages`, {
         method: 'POST',
         body: { content: util.s(MESSAGE) }
-      }).catch(err => util.err('Send msg error:', err));
+      }).then(data => this._trackSentMessage(channelId, data))
+        .catch(err => util.err('Send msg error:', err));
     }
 
     sendAdvancedMessage({ MESSAGE, EMBEDS, ATTACHMENTS, COMPONENTS, CHANNEL }) {
@@ -1322,7 +1364,8 @@
       return this._apiRequest(`/channels/${channelId}/messages`, {
         method: 'POST',
         body: payload
-      }).catch(err => util.err('Send advanced msg error:', err));
+      }).then(data => this._trackSentMessage(channelId, data))
+        .catch(err => util.err('Send advanced msg error:', err));
     }
 
     getMessage({ MESSAGE_ID, CHANNEL_ID }) {
@@ -1380,10 +1423,11 @@
       })
       .then(data => {
         if (!data.id) return Promise.reject('Failed to create DM');
-        return this._apiRequest(`/channels/${data.id}/messages`, {
+        const channelId = data.id;
+        return this._apiRequest(`/channels/${channelId}/messages`, {
           method: 'POST',
           body: { content: util.s(MESSAGE) }
-        });
+        }).then(msgData => this._trackSentMessage(channelId, msgData));
       })
       .catch(err => util.err('DM error:', err));
     }
@@ -1415,11 +1459,12 @@
       })
       .then(data => {
         if (!data.id) return Promise.reject('Failed to create DM');
+        const channelId = data.id;
         const payload = this._createMessagePayload(MESSAGE, EMBEDS, ATTACHMENTS, null, COMPONENTS);
-        return this._apiRequest(`/channels/${data.id}/messages`, {
+        return this._apiRequest(`/channels/${channelId}/messages`, {
           method: 'POST',
           body: payload
-        });
+        }).then(msgData => this._trackSentMessage(channelId, msgData));
       })
       .catch(err => util.err('Advanced DM error:', err));
     }
@@ -1440,16 +1485,18 @@
     }
 
     sendReply({ REPLY, MESSAGE_ID, CHANNEL_ID }) {
-      return this._apiRequest(`/channels/${util.s(CHANNEL_ID)}/messages`, {
+      const channelId = util.s(CHANNEL_ID);
+      return this._apiRequest(`/channels/${channelId}/messages`, {
         method: 'POST',
         body: {
           content: util.s(REPLY),
           message_reference: {
             message_id: util.s(MESSAGE_ID),
-            channel_id: util.s(CHANNEL_ID)
+            channel_id: channelId
           }
         }
-      }).catch(err => util.err('Reply error:', err));
+      }).then(data => this._trackSentMessage(channelId, data))
+        .catch(err => util.err('Reply error:', err));
     }
 
     sendAdvancedReply({ REPLY, EMBEDS, ATTACHMENTS, COMPONENTS, MESSAGE_ID, CHANNEL_ID }) {
@@ -1462,7 +1509,40 @@
       return this._apiRequest(`/channels/${channelId}/messages`, {
         method: 'POST',
         body: payload
-      }).catch(err => util.err('Advanced reply error:', err));
+      }).then(data => this._trackSentMessage(channelId, data))
+        .catch(err => util.err('Advanced reply error:', err));
+    }
+
+    // Edits an existing message (PATCH /channels/{id}/messages/{id}). Any
+    // of CONTENT/EMBEDS/ATTACHMENTS/COMPONENTS left at its default (empty
+    // string / '[]') is simply omitted from the request, so it's left
+    // untouched on the message rather than being cleared.
+    editMessage({ MESSAGE_ID, CHANNEL_ID, CONTENT, EMBEDS, ATTACHMENTS, COMPONENTS }) {
+      const channelId = util.s(CHANNEL_ID);
+      const messageId = util.s(MESSAGE_ID);
+      const payload = this._createMessagePayload(CONTENT, EMBEDS, ATTACHMENTS, null, COMPONENTS);
+
+      return this._apiRequest(`/channels/${channelId}/messages/${messageId}`, {
+        method: 'PATCH',
+        body: payload
+      }).then(data => {
+        this._updateCachedMessage(data);
+        return data;
+      }).catch(err => util.err('Edit message error:', err));
+    }
+
+    // Reporter: the id of the most recently sent message, across any
+    // channel or DM (sendMessage/sendAdvancedMessage/sendReply/
+    // sendAdvancedReply/sendDirectMessage/sendAdvancedDirectMessage all
+    // update this).
+    lastSentMessageId() {
+      return this.lastSentMessageId || '';
+    }
+
+    // Reporter: the id of the most recently sent message in a specific
+    // channel (or DM channel) id.
+    lastSentMessageIdInChannel({ CHANNEL_ID }) {
+      return this.lastSentMessageIdByChannel.get(util.s(CHANNEL_ID)) || '';
     }
 
     addReaction({ EMOJI, MESSAGE_ID, CHANNEL_ID }) {
