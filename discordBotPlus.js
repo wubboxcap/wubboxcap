@@ -1,18 +1,33 @@
-// Name: DiscordBotPlus
-// Author: Mistium (discordBot extension) & AMTVE (embed and attachment support)
-// Description: Make discord bots in scratch
+// Name: DiscordBot
+// Author: Mistium (Modified for Embed & REST Pre-upload Attachment Support)
+// Description: Make discord bots in turbowarp
 
 // License: MPL-2.0
 // This Source Code is subject to the terms of the Mozilla Public License, v2.0,
 // If a copy of the MPL was not distributed with this file,
 // Then you can obtain one at https://mozilla.org/MPL/2.0/
 
-// This extension can override the original extension.
-
-
 (function(Scratch) {
+  // Hat blocks (on message received / on interaction received) only work in
+  // unsandboxed extensions, since they need direct runtime access to find
+  // which variable each block instance should fill in. Make sure "Run
+  // without sandbox" is checked when loading this extension.
+  if (!Scratch.extensions.unsandboxed) {
+    throw new Error('DiscordBot must run unsandboxed (enable "Run without sandbox" when adding this extension) to support the "on message received" / "on interaction received" blocks.');
+  }
+
+  const vm = Scratch.vm;
+  const runtime = vm.runtime;
+  const EXTENSION_ID = 'mistiumDiscordBot';
+
   const API = 'https://apps.mistium.com/discord';
   const WS = 'wss://gateway.discord.gg/?v=10&encoding=json';
+
+  // Optional CORS relay for the attachment-upload PUT step (see
+  // cors-upload-proxy-worker.js). The /channels/{id}/attachments PUT goes
+  // directly to a Google Cloud Storage URL whose CORS policy doesn't allow
+  // browser origins like TurboWarp, so it gets blocked unless relayed
+  // through a server you control.
   const UPLOAD_PROXY = 'https://cors.ernestoguevarahuezo.workers.dev/proxy?url=';
 
   let bot_data = null;
@@ -30,6 +45,7 @@
       this.client = null;
       this.messages = [];
       this.interactions = [];
+      this.componentInteractions = [];
       this.status = "online";
       this.activity = null;
       
@@ -52,7 +68,7 @@
 
     getInfo() {
       return {
-        id: 'mistiumDiscordBot',
+        id: EXTENSION_ID,
         name: 'DiscordBot',
         description: 'A Discord bot for Scratch with Embed and REST API Attachment support',
         color1: "#7289DA",
@@ -108,6 +124,36 @@
             }
           },
           
+          '---',
+
+          // ========================
+          //        Events
+          // ========================
+          {
+            opcode: 'onMessageReceived',
+            blockType: Scratch.BlockType.EVENT,
+            text: 'on message received',
+            isEdgeActivated: false,
+            shouldRestartExistingThreads: true
+          },
+          {
+            opcode: 'receivedMessage',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'received message',
+          },
+          {
+            opcode: 'onInteractionReceived',
+            blockType: Scratch.BlockType.EVENT,
+            text: 'on interaction received',
+            isEdgeActivated: false,
+            shouldRestartExistingThreads: true
+          },
+          {
+            opcode: 'receivedInteraction',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'received interaction',
+          },
+
           '---',
           
           // ========================
@@ -170,6 +216,17 @@
               MESSAGE: {
                 type: Scratch.ArgumentType.STRING,
                 defaultValue: 'message'
+              }
+            }
+          },
+          {
+            opcode: 'getOrCreateDMChannel',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'get DM channel with user [USER_ID]',
+            arguments: {
+              USER_ID: {
+                type: Scratch.ArgumentType.STRING,
+                defaultValue: 'user_id'
               }
             }
           },
@@ -374,29 +431,114 @@
           '---',
 
           // ========================
+          //   Component Builder (v1)
+          // ========================
+          {
+            opcode: 'createButton',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'create [STYLE] button label [LABEL] id/url [ID_OR_URL] emoji [EMOJI] disabled [DISABLED]',
+            arguments: {
+              STYLE: { menu: 'BUTTON_STYLE' },
+              LABEL: { type: Scratch.ArgumentType.STRING, defaultValue: 'Click me' },
+              ID_OR_URL: { type: Scratch.ArgumentType.STRING, defaultValue: 'my_button' },
+              EMOJI: { type: Scratch.ArgumentType.STRING, defaultValue: '' },
+              DISABLED: { type: Scratch.ArgumentType.BOOLEAN, defaultValue: false }
+            }
+          },
+          {
+            opcode: 'createSelectMenu',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'create select menu id [CUSTOM_ID] placeholder [PLACEHOLDER] min [MIN] max [MAX] disabled [DISABLED]',
+            arguments: {
+              CUSTOM_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'my_select' },
+              PLACEHOLDER: { type: Scratch.ArgumentType.STRING, defaultValue: 'Choose an option' },
+              MIN: { type: Scratch.ArgumentType.NUMBER, defaultValue: 1 },
+              MAX: { type: Scratch.ArgumentType.NUMBER, defaultValue: 1 },
+              DISABLED: { type: Scratch.ArgumentType.BOOLEAN, defaultValue: false }
+            }
+          },
+          {
+            opcode: 'addSelectOption',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'add option to select [SELECT] label [LABEL] value [VALUE] description [DESCRIPTION] emoji [EMOJI] default [DEFAULT]',
+            arguments: {
+              SELECT: { type: Scratch.ArgumentType.STRING, defaultValue: '{}' },
+              LABEL: { type: Scratch.ArgumentType.STRING, defaultValue: 'Option' },
+              VALUE: { type: Scratch.ArgumentType.STRING, defaultValue: 'option_value' },
+              DESCRIPTION: { type: Scratch.ArgumentType.STRING, defaultValue: '' },
+              EMOJI: { type: Scratch.ArgumentType.STRING, defaultValue: '' },
+              DEFAULT: { type: Scratch.ArgumentType.BOOLEAN, defaultValue: false }
+            }
+          },
+          {
+            opcode: 'createActionRow',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'create action row',
+          },
+          {
+            opcode: 'addComponentToRow',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'add component [COMPONENT] to row [ROW]',
+            arguments: {
+              COMPONENT: { type: Scratch.ArgumentType.STRING, defaultValue: '{}' },
+              ROW: { type: Scratch.ArgumentType.STRING, defaultValue: '{}' }
+            }
+          },
+          {
+            opcode: 'createComponentList',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'create component list',
+          },
+          {
+            opcode: 'addRowToList',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'add row [ROW] to list [LIST]',
+            arguments: {
+              ROW: { type: Scratch.ArgumentType.STRING, defaultValue: '{}' },
+              LIST: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
+            }
+          },
+
+          '---',
+          
+          // ========================
           //    Advanced Messages
           // ========================
           {
             opcode: 'sendAdvancedMessage',
             blockType: Scratch.BlockType.COMMAND,
-            text: 'send message [MESSAGE] with embeds [EMBEDS] attachments [ATTACHMENTS] to channel [CHANNEL]',
+            text: 'send message [MESSAGE] with embeds [EMBEDS] attachments [ATTACHMENTS] components [COMPONENTS] to channel [CHANNEL]',
             arguments: {
               MESSAGE: { type: Scratch.ArgumentType.STRING, defaultValue: '' },
               EMBEDS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
               ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
               CHANNEL: { type: Scratch.ArgumentType.STRING, defaultValue: 'channel_id' }
             }
           },
           {
             opcode: 'sendAdvancedReply',
             blockType: Scratch.BlockType.COMMAND,
-            text: 'send reply [REPLY] with embeds [EMBEDS] attachments [ATTACHMENTS] to message [MESSAGE_ID] in channel [CHANNEL_ID]',
+            text: 'send reply [REPLY] with embeds [EMBEDS] attachments [ATTACHMENTS] components [COMPONENTS] to message [MESSAGE_ID] in channel [CHANNEL_ID]',
             arguments: {
               REPLY: { type: Scratch.ArgumentType.STRING, defaultValue: '' },
               EMBEDS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
               ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
               MESSAGE_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'message_id' },
               CHANNEL_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'channel_id' }
+            }
+          },
+          {
+            opcode: 'sendAdvancedDirectMessage',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'DM user [USER_ID] message [MESSAGE] with embeds [EMBEDS] attachments [ATTACHMENTS] components [COMPONENTS]',
+            arguments: {
+              USER_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'user_id' },
+              MESSAGE: { type: Scratch.ArgumentType.STRING, defaultValue: '' },
+              EMBEDS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
             }
           },
 
@@ -570,12 +712,99 @@
           {
             opcode: 'replyToInteractionAdvanced',
             blockType: Scratch.BlockType.COMMAND,
-            text: 'reply to interaction [INTERACTION] with content [CONTENT] embeds [EMBEDS] attachments [ATTACHMENTS]',
+            text: 'reply to interaction [INTERACTION] with content [CONTENT] embeds [EMBEDS] attachments [ATTACHMENTS] components [COMPONENTS]',
             arguments: {
               INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' },
               CONTENT: { type: Scratch.ArgumentType.STRING, defaultValue: 'content' },
               EMBEDS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
-              ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
+              ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
+            }
+          },
+
+          '---',
+
+          // ========================
+          //  Component Interactions
+          //  (button clicks / select menu choices)
+          // ========================
+          {
+            opcode: 'onComponentInteractionReceived',
+            blockType: Scratch.BlockType.EVENT,
+            text: 'on component interaction received',
+            isEdgeActivated: false,
+            shouldRestartExistingThreads: true
+          },
+          {
+            opcode: 'receivedComponentInteraction',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'received component interaction',
+          },
+          {
+            opcode: 'newComponentInteraction',
+            blockType: Scratch.BlockType.BOOLEAN,
+            text: 'new component interactions?',
+          },
+          {
+            opcode: 'popComponentInteraction',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'get next component interaction',
+          },
+          {
+            opcode: 'totalComponentInteractions',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'total component interactions',
+          },
+          {
+            opcode: 'interactionCustomId',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'custom id of interaction [INTERACTION]',
+            arguments: {
+              INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' }
+            }
+          },
+          {
+            opcode: 'interactionValues',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'selected values of interaction [INTERACTION]',
+            arguments: {
+              INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' }
+            }
+          },
+          {
+            opcode: 'interactionCommandName',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'command name of interaction [INTERACTION]',
+            arguments: {
+              INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' }
+            }
+          },
+          {
+            opcode: 'interactionUser',
+            blockType: Scratch.BlockType.REPORTER,
+            text: 'user of interaction [INTERACTION]',
+            arguments: {
+              INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' }
+            }
+          },
+          {
+            opcode: 'acknowledgeInteraction',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'acknowledge interaction [INTERACTION] (no visible response)',
+            arguments: {
+              INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' }
+            }
+          },
+          {
+            opcode: 'updateInteractionMessage',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'update message for interaction [INTERACTION] content [CONTENT] embeds [EMBEDS] attachments [ATTACHMENTS] components [COMPONENTS]',
+            arguments: {
+              INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' },
+              CONTENT: { type: Scratch.ArgumentType.STRING, defaultValue: 'content' },
+              EMBEDS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
             }
           },
           
@@ -633,6 +862,16 @@
               { text: "boolean", value: "boolean" },
               { text: "user", value: "user" },
               { text: "channel", value: "channel" }
+            ]
+          },
+          BUTTON_STYLE: {
+            acceptReporters: false,
+            items: [
+              { text: "blurple (primary)", value: "1" },
+              { text: "grey (secondary)", value: "2" },
+              { text: "green (success)", value: "3" },
+              { text: "red (danger)", value: "4" },
+              { text: "link", value: "5" }
             ]
           }
         }
@@ -843,6 +1082,7 @@
           this.messages.push(JSON.stringify(data.d));
           util.limit(this.messages, 100);
           this._cacheMessage(data.d);
+          this._fireHat('onMessageReceived', JSON.stringify(data.d));
           break;
         case 'MESSAGE_UPDATE':
           this._updateCachedMessage(data.d);
@@ -853,8 +1093,59 @@
         case 'INTERACTION_CREATE':
           this.interactions.push(JSON.stringify(data.d));
           util.limit(this.interactions, 100);
+          this._fireHat('onInteractionReceived', JSON.stringify(data.d));
+
+          // Discord interaction type 3 == MESSAGE_COMPONENT (button click or
+          // select menu choice). Route these into their own queue/hat too,
+          // since scripts handling button clicks usually don't want to sift
+          // through slash-command interactions to find them.
+          if (data.d.type === 3) {
+            this.componentInteractions.push(JSON.stringify(data.d));
+            util.limit(this.componentInteractions, 100);
+            this._fireHat('onComponentInteractionReceived', JSON.stringify(data.d));
+          }
           break;
       }
+    }
+
+    // ==============================================
+    //         Event Hats + Fill-in Reporters
+    // ==============================================
+
+    // Starts every placed copy of a hat block, then tags each newly-created
+    // Thread with the payload that triggered it. This is the hat-block
+    // equivalent of Swift JSON's stack-frame "fill-in" reporters: since
+    // event blocks can't carry value-input sockets (TurboWarp only allows
+    // field menus on them), the payload instead rides along on the Thread
+    // object itself, where receivedMessage()/receivedInteraction() below
+    // can read it back out — from anywhere in that thread's script, no
+    // matter how deeply nested.
+    _fireHat(shortOpcode, payload) {
+      const fullOpcode = `${EXTENSION_ID}_${shortOpcode}`;
+      const newThreads = runtime.startHats(fullOpcode) || [];
+      for (const thread of newThreads) {
+        thread.discordPayload = payload;
+      }
+    }
+
+    // Drag-and-drop reporter: plug this into any block under "on message
+    // received" to get the JSON of the message that triggered it.
+    receivedMessage(args, util) {
+      return util.thread.discordPayload ?? '';
+    }
+
+    // Drag-and-drop reporter: plug this into any block under "on
+    // interaction received" to get the JSON of the interaction that
+    // triggered it.
+    receivedInteraction(args, util) {
+      return util.thread.discordPayload ?? '';
+    }
+
+    // Drag-and-drop reporter: plug this into any block under "on component
+    // interaction received" to get the JSON of the button click / select
+    // menu choice that triggered it.
+    receivedComponentInteraction(args, util) {
+      return util.thread.discordPayload ?? '';
     }
 
     _cacheMessage(message) {
@@ -976,7 +1267,7 @@
       }
     }
 
-    _createMessagePayload(content, embedsStr, attachmentsStr, message_reference = null) {
+    _createMessagePayload(content, embedsStr, attachmentsStr, message_reference = null, componentsStr = null) {
       let payload = {};
       if (content) payload.content = util.s(content);
       if (message_reference) payload.message_reference = message_reference;
@@ -999,6 +1290,18 @@
         }
       }
 
+      if (componentsStr && componentsStr !== '[]') {
+        try {
+          const parsed = JSON.parse(util.s(componentsStr));
+          // Accept either a list of action rows, or a single action row/
+          // component on its own (auto-wrap so users don't have to always
+          // build a full list for one button).
+          payload.components = Array.isArray(parsed) ? parsed : [parsed];
+        } catch (e) {
+          util.err('Error parsing components:', e);
+        }
+      }
+
       return payload;
     }
 
@@ -1013,9 +1316,9 @@
       }).catch(err => util.err('Send msg error:', err));
     }
 
-    sendAdvancedMessage({ MESSAGE, EMBEDS, ATTACHMENTS, CHANNEL }) {
+    sendAdvancedMessage({ MESSAGE, EMBEDS, ATTACHMENTS, COMPONENTS, CHANNEL }) {
       const channelId = util.s(CHANNEL);
-      const payload = this._createMessagePayload(MESSAGE, EMBEDS, ATTACHMENTS);
+      const payload = this._createMessagePayload(MESSAGE, EMBEDS, ATTACHMENTS, null, COMPONENTS);
       return this._apiRequest(`/channels/${channelId}/messages`, {
         method: 'POST',
         body: payload
@@ -1085,6 +1388,42 @@
       .catch(err => util.err('DM error:', err));
     }
 
+    // Opens (or fetches the existing) DM channel with a user. Returns the
+    // channel id as a string, so it can be plugged into "upload attachment
+    // ... for channel [CHANNEL_ID]" before sending a DM with attachments,
+    // exactly like you would for a regular channel.
+    getOrCreateDMChannel({ USER_ID }) {
+      return this._apiRequest('/users/@me/channels', {
+        method: 'POST',
+        body: { recipient_id: util.s(USER_ID) }
+      })
+      .then(data => data && data.id ? data.id : '')
+      .catch(err => {
+        util.err('Get/create DM channel error:', err);
+        return '';
+      });
+    }
+
+    // DM version of sendAdvancedMessage: supports embeds, attachments, and
+    // components. Since attachments need a real channel id to pre-upload
+    // against, this opens/reuses the DM channel first via the same endpoint
+    // getOrCreateDMChannel uses, then posts the full payload to it.
+    sendAdvancedDirectMessage({ USER_ID, MESSAGE, EMBEDS, ATTACHMENTS, COMPONENTS }) {
+      return this._apiRequest('/users/@me/channels', {
+        method: 'POST',
+        body: { recipient_id: util.s(USER_ID) }
+      })
+      .then(data => {
+        if (!data.id) return Promise.reject('Failed to create DM');
+        const payload = this._createMessagePayload(MESSAGE, EMBEDS, ATTACHMENTS, null, COMPONENTS);
+        return this._apiRequest(`/channels/${data.id}/messages`, {
+          method: 'POST',
+          body: payload
+        });
+      })
+      .catch(err => util.err('Advanced DM error:', err));
+    }
+
     deleteMessage({ MESSAGE_ID, CHANNEL_ID }) {
       const channelId = util.s(CHANNEL_ID);
       const messageId = util.s(MESSAGE_ID);
@@ -1113,13 +1452,13 @@
       }).catch(err => util.err('Reply error:', err));
     }
 
-    sendAdvancedReply({ REPLY, EMBEDS, ATTACHMENTS, MESSAGE_ID, CHANNEL_ID }) {
+    sendAdvancedReply({ REPLY, EMBEDS, ATTACHMENTS, COMPONENTS, MESSAGE_ID, CHANNEL_ID }) {
       const channelId = util.s(CHANNEL_ID);
       const reference = {
         message_id: util.s(MESSAGE_ID),
         channel_id: channelId
       };
-      const payload = this._createMessagePayload(REPLY, EMBEDS, ATTACHMENTS, reference);
+      const payload = this._createMessagePayload(REPLY, EMBEDS, ATTACHMENTS, reference, COMPONENTS);
       return this._apiRequest(`/channels/${channelId}/messages`, {
         method: 'POST',
         body: payload
@@ -1345,6 +1684,129 @@
     }
 
     // ==============================================
+    //          Component Builder (v1)
+    // ==============================================
+
+    // Turns a possible emoji argument into Discord's emoji object shape.
+    // Accepts either a plain unicode emoji ("🔥") or, for custom guild
+    // emoji, a pre-built JSON object string like {"name":"pepe","id":"123"}.
+    // Returns undefined (which JSON.stringify drops) if left blank.
+    _parseEmojiArg(emojiStr) {
+      const str = util.s(emojiStr).trim();
+      if (!str) return undefined;
+      if (str.startsWith('{')) {
+        try {
+          return JSON.parse(str);
+        } catch (e) {
+          util.err('Bad emoji JSON, falling back to unicode name:', e);
+        }
+      }
+      return { name: str };
+    }
+
+    // Builds a single button component (type 2). For LINK-style buttons
+    // (style 5), ID_OR_URL is used as the url; for all other styles it's
+    // used as custom_id, which comes back in interaction.data.custom_id
+    // when the button is clicked.
+    createButton({ STYLE, LABEL, ID_OR_URL, EMOJI, DISABLED }) {
+      const style = parseInt(STYLE) || 1;
+      const button = {
+        type: 2,
+        style,
+        label: util.s(LABEL),
+        disabled: Boolean(DISABLED)
+      };
+
+      if (style === 5) button.url = util.s(ID_OR_URL);
+      else button.custom_id = util.s(ID_OR_URL);
+
+      const emoji = this._parseEmojiArg(EMOJI);
+      if (emoji) button.emoji = emoji;
+
+      return JSON.stringify(button);
+    }
+
+    // Builds a select menu (type 3, string select) with an empty options
+    // list. Use "add option to select" to fill it in before sending.
+    createSelectMenu({ CUSTOM_ID, PLACEHOLDER, MIN, MAX, DISABLED }) {
+      const select = {
+        type: 3,
+        custom_id: util.s(CUSTOM_ID),
+        options: [],
+        min_values: Math.max(0, parseInt(MIN) || 0),
+        max_values: Math.max(1, parseInt(MAX) || 1),
+        disabled: Boolean(DISABLED)
+      };
+
+      const placeholder = util.s(PLACEHOLDER).trim();
+      if (placeholder) select.placeholder = placeholder;
+
+      return JSON.stringify(select);
+    }
+
+    addSelectOption({ SELECT, LABEL, VALUE, DESCRIPTION, EMOJI, DEFAULT }) {
+      try {
+        const select = JSON.parse(util.s(SELECT) || '{}');
+        if (!Array.isArray(select.options)) select.options = [];
+
+        const option = {
+          label: util.s(LABEL),
+          value: util.s(VALUE),
+          default: Boolean(DEFAULT)
+        };
+
+        const description = util.s(DESCRIPTION).trim();
+        if (description) option.description = description;
+
+        const emoji = this._parseEmojiArg(EMOJI);
+        if (emoji) option.emoji = emoji;
+
+        select.options.push(option);
+        return JSON.stringify(select);
+      } catch (e) {
+        util.err('Add select option error:', e);
+        return util.s(SELECT) || '{}';
+      }
+    }
+
+    // Action rows (type 1) are the containers a message's top-level
+    // "components" array holds — buttons and select menus can't be placed
+    // directly in a message, they have to live inside one of these.
+    createActionRow() {
+      return JSON.stringify({ type: 1, components: [] });
+    }
+
+    addComponentToRow({ COMPONENT, ROW }) {
+      try {
+        const row = JSON.parse(util.s(ROW) || '{}');
+        const component = JSON.parse(util.s(COMPONENT) || '{}');
+        if (!Array.isArray(row.components)) row.components = [];
+        row.components.push(component);
+        return JSON.stringify(row);
+      } catch (e) {
+        util.err('Add component to row error:', e);
+        return util.s(ROW) || '{}';
+      }
+    }
+
+    createComponentList() {
+      return '[]';
+    }
+
+    addRowToList({ ROW, LIST }) {
+      try {
+        const list = JSON.parse(util.s(LIST) || '[]');
+        const row = JSON.parse(util.s(ROW) || '{}');
+        if (!Array.isArray(list)) return util.s(LIST) || '[]';
+        list.push(row);
+        return JSON.stringify(list);
+      } catch (e) {
+        util.err('Add row to list error:', e);
+        return util.s(LIST) || '[]';
+      }
+    }
+
+    // ==============================================
     //               Message Queue
     // ==============================================
     
@@ -1496,28 +1958,10 @@
       }
     }
 
-    replyToInteractionAdvanced({ INTERACTION, CONTENT, EMBEDS, ATTACHMENTS }) {
+    replyToInteractionAdvanced({ INTERACTION, CONTENT, EMBEDS, ATTACHMENTS, COMPONENTS }) {
       try {
         const interaction = JSON.parse(util.s(INTERACTION));
-        let dataPayload = { content: util.s(CONTENT) };
-
-        if (EMBEDS && EMBEDS !== '[]' && EMBEDS !== '{}') {
-          try {
-            const parsed = JSON.parse(util.s(EMBEDS));
-            dataPayload.embeds = Array.isArray(parsed) ? parsed : [parsed];
-          } catch (e) {
-            util.err('Error parsing interaction embeds:', e);
-          }
-        }
-
-        if (ATTACHMENTS && ATTACHMENTS !== '[]') {
-          try {
-            const parsed = JSON.parse(util.s(ATTACHMENTS));
-            dataPayload.attachments = Array.isArray(parsed) ? parsed : [parsed];
-          } catch (e) {
-            util.err('Error parsing interaction attachments:', e);
-          }
-        }
+        const dataPayload = this._createMessagePayload(CONTENT, EMBEDS, ATTACHMENTS, null, COMPONENTS);
 
         return this._apiRequest(`/interactions/${interaction.id}/${interaction.token}/callback`, {
           method: 'POST',
@@ -1526,6 +1970,104 @@
             data: dataPayload
           }
         }).catch(err => util.err('Interaction reply error:', err));
+      } catch (err) {
+        util.err('Interaction parse error:', err);
+      }
+    }
+
+    // ==============================================
+    //         Component Interactions
+    //   (button clicks / select menu choices)
+    // ==============================================
+
+    newComponentInteraction() {
+      return this.componentInteractions.length > 0;
+    }
+
+    popComponentInteraction() {
+      return this.componentInteractions.shift() || "";
+    }
+
+    totalComponentInteractions() {
+      return this.componentInteractions.length;
+    }
+
+    // Reads the custom_id that was set when the button/select menu was
+    // built (createButton/createSelectMenu), so you can tell which
+    // component was clicked.
+    interactionCustomId({ INTERACTION }) {
+      try {
+        const interaction = JSON.parse(util.s(INTERACTION));
+        return interaction?.data?.custom_id ?? '';
+      } catch (e) {
+        return '';
+      }
+    }
+
+    // For select menus: the list of values the user picked, as a JSON
+    // array string (e.g. '["option_value_a","option_value_b"]').
+    interactionValues({ INTERACTION }) {
+      try {
+        const interaction = JSON.parse(util.s(INTERACTION));
+        return JSON.stringify(interaction?.data?.values ?? []);
+      } catch (e) {
+        return '[]';
+      }
+    }
+
+    // For slash-command interactions: the command's name (e.g. "ping").
+    // Empty string for component interactions, which don't have one.
+    interactionCommandName({ INTERACTION }) {
+      try {
+        const interaction = JSON.parse(util.s(INTERACTION));
+        return interaction?.data?.name ?? '';
+      } catch (e) {
+        return '';
+      }
+    }
+
+    // The user who triggered the interaction, whether it happened in a
+    // guild (member.user) or a DM (user).
+    interactionUser({ INTERACTION }) {
+      try {
+        const interaction = JSON.parse(util.s(INTERACTION));
+        const user = interaction?.member?.user ?? interaction?.user ?? {};
+        return JSON.stringify(user);
+      } catch (e) {
+        return '{}';
+      }
+    }
+
+    // Acknowledges a component interaction with no visible response (type 6,
+    // DEFERRED_UPDATE_MESSAGE). Use this when you want a button click to not
+    // show "This interaction failed", but don't need to change anything.
+    acknowledgeInteraction({ INTERACTION }) {
+      try {
+        const interaction = JSON.parse(util.s(INTERACTION));
+        return this._apiRequest(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+          method: 'POST',
+          body: { type: 6 }
+        }).catch(err => util.err('Acknowledge interaction error:', err));
+      } catch (err) {
+        util.err('Interaction parse error:', err);
+      }
+    }
+
+    // Edits the message a button/select menu is attached to (type 7,
+    // UPDATE_MESSAGE) — the standard way to respond to a component click,
+    // e.g. disabling a button or swapping an embed after it's pressed.
+    updateInteractionMessage({ INTERACTION, CONTENT, EMBEDS, ATTACHMENTS, COMPONENTS }) {
+      try {
+        const interaction = JSON.parse(util.s(INTERACTION));
+        const dataPayload = this._createMessagePayload(CONTENT, EMBEDS, ATTACHMENTS, null, COMPONENTS);
+
+        return this._apiRequest(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+          method: 'POST',
+          body: {
+            type: 7,
+            data: dataPayload
+          }
+        }).catch(err => util.err('Update interaction message error:', err));
       } catch (err) {
         util.err('Interaction parse error:', err);
       }
