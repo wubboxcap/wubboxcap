@@ -46,7 +46,7 @@
       this.messages = [];
       this.interactions = [];
       this.componentInteractions = [];
-      this.lastSentMessageId = null;
+      this._lastSentId = null;
       this.lastSentMessageIdByChannel = new Map();
       this.status = "online";
       this.activity = null;
@@ -749,6 +749,18 @@
               COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
             }
           },
+          {
+            opcode: 'replyToInteractionEphemeral',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'reply to interaction [INTERACTION] as an ephemeral message with content [CONTENT] embeds [EMBEDS] attachments [ATTACHMENTS] components [COMPONENTS]',
+            arguments: {
+              INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' },
+              CONTENT: { type: Scratch.ArgumentType.STRING, defaultValue: 'content' },
+              EMBEDS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
+            }
+          },
 
           '---',
 
@@ -827,6 +839,18 @@
             opcode: 'updateInteractionMessage',
             blockType: Scratch.BlockType.COMMAND,
             text: 'update message for interaction [INTERACTION] content [CONTENT] embeds [EMBEDS] attachments [ATTACHMENTS] components [COMPONENTS]',
+            arguments: {
+              INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' },
+              CONTENT: { type: Scratch.ArgumentType.STRING, defaultValue: 'content' },
+              EMBEDS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              ATTACHMENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' },
+              COMPONENTS: { type: Scratch.ArgumentType.STRING, defaultValue: '[]' }
+            }
+          },
+          {
+            opcode: 'replyToComponentInteractionEphemeral',
+            blockType: Scratch.BlockType.COMMAND,
+            text: 'reply to component interaction [INTERACTION] as an ephemeral message with content [CONTENT] embeds [EMBEDS] attachments [ATTACHMENTS] components [COMPONENTS]',
             arguments: {
               INTERACTION: { type: Scratch.ArgumentType.STRING, defaultValue: '{interaction object}' },
               CONTENT: { type: Scratch.ArgumentType.STRING, defaultValue: 'content' },
@@ -1182,7 +1206,7 @@
     // chain without disturbing the resolved value.
     _trackSentMessage(channelId, message) {
       if (message && message.id) {
-        this.lastSentMessageId = message.id;
+        this._lastSentId = message.id;
         this.lastSentMessageIdByChannel.set(channelId, message.id);
       }
       return message;
@@ -1536,7 +1560,7 @@
     // sendAdvancedReply/sendDirectMessage/sendAdvancedDirectMessage all
     // update this).
     lastSentMessageId() {
-      return this.lastSentMessageId || '';
+      return this._lastSentId || '';
     }
 
     // Reporter: the id of the most recently sent message in a specific
@@ -2055,6 +2079,33 @@
       }
     }
 
+    // Shared helper for both ephemeral reply blocks. Responds to an
+    // interaction with a new message (callback type 4) that has the
+    // EPHEMERAL flag (1 << 6 = 64) set, so only the user who triggered the
+    // interaction can see it. Works for slash commands and for component
+    // interactions (button clicks / select menus) alike.
+    _replyEphemeral({ INTERACTION, CONTENT, EMBEDS, ATTACHMENTS, COMPONENTS }) {
+      try {
+        const interaction = JSON.parse(util.s(INTERACTION));
+        const dataPayload = this._createMessagePayload(CONTENT, EMBEDS, ATTACHMENTS, null, COMPONENTS);
+        dataPayload.flags = 64;
+
+        return this._apiRequest(`/interactions/${interaction.id}/${interaction.token}/callback`, {
+          method: 'POST',
+          body: {
+            type: 4,
+            data: dataPayload
+          }
+        }).catch(err => util.err('Ephemeral interaction reply error:', err));
+      } catch (err) {
+        util.err('Interaction parse error:', err);
+      }
+    }
+
+    replyToInteractionEphemeral(args) {
+      return this._replyEphemeral(args);
+    }
+
     // ==============================================
     //         Component Interactions
     //   (button clicks / select menu choices)
@@ -2151,6 +2202,13 @@
       } catch (err) {
         util.err('Interaction parse error:', err);
       }
+    }
+
+    // Replies to a button click / select menu choice with a brand new
+    // ephemeral message (only visible to the user who clicked), leaving the
+    // original message the component is attached to untouched.
+    replyToComponentInteractionEphemeral(args) {
+      return this._replyEphemeral(args);
     }
 
     // ==============================================
